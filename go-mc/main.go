@@ -1,8 +1,8 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -22,20 +22,26 @@ var (
 	concurrency int
 	requests    int
 	size        int
+	mkeys       int
 	cmd         int
 	addr        string
 )
 
 type stat struct {
-	f  int
-	n  int32
-	ts int32
+	f     int
+	n, en int32
+	ts    int32
+	// equal err
+	ee int32
+	// multi equal err
+	mee int32
 }
 
 func init() {
 	flag.IntVar(&concurrency, "c", 1, "concurrency")
-	flag.IntVar(&requests, "n", 1, "requests")
+	flag.IntVar(&requests, "n", 100, "requests")
 	flag.IntVar(&size, "s", 256, "bytes size")
+	flag.IntVar(&mkeys, "k", 0, "multi keys")
 	flag.IntVar(&cmd, "f", 3, "command flag. bit: 1Set 10Get 100MGet.")
 	flag.StringVar(&addr, "addr", "", "addr")
 }
@@ -59,20 +65,28 @@ func main() {
 		if s.f == cmdSet {
 			setS.n += s.n
 			setS.ts += s.ts
+			setS.en += s.en
 		} else if s.f == cmdGet {
 			getS.n += s.n
 			getS.ts += s.ts
+			getS.en += s.en
+			getS.ee += s.ee
 		} else if s.f == cmdMGet {
 			mgetS.n += s.n
 			mgetS.ts += s.ts
+			mgetS.en += s.en
+			mgetS.ee += s.ee
+			mgetS.mee += s.mee
 		}
 	}
 	if cmd&cmdSet > 0 {
-		fmt.Printf("SET %d %.6f", setS.n, float32(setS.ts)/float32(setS.n))
-	} else if cmd&cmdGet > 0 {
-		fmt.Printf("GET %d %.6f", getS.n, float32(getS.ts)/float32(getS.n))
-	} else if cmd&cmdMGet > 0 {
-		fmt.Printf("MGET %d %.6f", mgetS.n, float32(mgetS.ts)/float32(mgetS.n))
+		fmt.Printf("SET Success:%d Failure:%d Time:%.6f\n", setS.n, setS.en, float32(setS.ts)/float32(setS.n))
+	}
+	if cmd&cmdGet > 0 {
+		fmt.Printf("GET Success:%d Failure:%d NotEqual:%d Time:%.6f\n", getS.n, getS.en, getS.ee, float32(getS.ts)/float32(getS.n))
+	}
+	if cmd&cmdMGet > 0 {
+		fmt.Printf("MGET Success:%d Failure:%d NotEqual:%d NotResult:%d Time:%.6f\n", mgetS.n, mgetS.en, mgetS.ee, mgetS.mee, float32(mgetS.ts)/float32(mgetS.n))
 	}
 }
 
@@ -81,9 +95,13 @@ func exec(n int, ssCh chan []*stat) {
 	if err != nil {
 		println("exec cmd error:", err.Error())
 	}
-	alloc := [300]string{}
-	keys := alloc[:0]
-	ks := 10
+	allocK := [300]string{}
+	keys := allocK[:0]
+	items := map[string]*conn.Item{}
+	ks := mkeys
+	if ks == 0 {
+		ks = 10
+	}
 	s1 := &stat{}
 	s2 := &stat{}
 	s3 := &stat{}
@@ -95,31 +113,69 @@ func exec(n int, ssCh chan []*stat) {
 		if cmd&cmdSet > 0 {
 			item.Value = randValue()
 			start := time.Now()
-			c.Set(item)
+			err := c.Set(item)
 			tc := int32(time.Since(start) / time.Millisecond)
 			s1.f = cmdSet
-			s1.ts += tc
-			s1.n++
+			if err != nil {
+				s1.en++
+				println(err.Error())
+			} else {
+				s1.ts += tc
+				s1.n++
+			}
 		}
 		if cmd&cmdGet > 0 {
 			start := time.Now()
-			c.Get(key)
+			r, err := c.Get(key)
 			tc := int32(time.Since(start) / time.Millisecond)
 			s2.f = cmdGet
-			s2.ts += tc
-			s2.n++
+			if err != nil {
+				s2.en++
+			} else {
+				s2.ts += tc
+				s2.n++
+			}
+			if r == nil || !bytes.Equal(r.Value, item.Value) {
+				s2.ee++
+			}
 		}
 		if cmd&cmdMGet > 0 {
 			keys = append(keys, key)
+			items[key] = item
 			if len(keys) >= ks {
 				start := time.Now()
-				c.GetMulti(keys)
+				res, err := c.GetMulti(keys)
 				tc := int32(time.Since(start) / time.Millisecond)
-				s3.f = cmdGet
-				s3.ts += tc
-				s3.n++
-				keys = alloc[:0]
-				ks = mrand.Intn(290) + 10
+				s3.f = cmdMGet
+				if err != nil {
+					s3.en++
+				} else {
+					s3.ts += tc
+					s3.n++
+				}
+				if cmd&cmdSet > 0 && res != nil {
+					for _, key := range keys {
+						i := items[key]
+						if i == nil {
+							s3.mee++
+							continue
+						}
+						if r := res[key]; r != nil {
+							if !bytes.Equal(r.Value, i.Value) {
+								s3.ee++
+							}
+						} else {
+							s3.mee++
+						}
+					}
+				}
+				keys = allocK[:0]
+				if mkeys > 0 {
+					ks = mkeys
+				} else {
+					ks = mrand.Intn(290) + 10
+				}
+				items = map[string]*conn.Item{}
 			}
 		}
 	}
@@ -135,6 +191,5 @@ func randKey() string {
 func randValue() []byte {
 	bs := make([]byte, size)
 	rand.Read(bs)
-	wr := base64.StdEncoding.EncodeToString(bs)
-	return []byte(wr[:size])
+	return bs
 }
