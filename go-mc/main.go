@@ -24,6 +24,7 @@ var (
 	size        int
 	mkeys       int
 	cmd         int
+	tm          string
 	addr        string
 )
 
@@ -43,12 +44,38 @@ func init() {
 	flag.IntVar(&size, "s", 256, "bytes size")
 	flag.IntVar(&mkeys, "k", 0, "multi keys")
 	flag.IntVar(&cmd, "f", 3, "command flag. bit: 1Set 10Get 100MGet.")
+	flag.StringVar(&tm, "t", "", "enough duration.")
 	flag.StringVar(&addr, "addr", "", "addr")
 }
 
 func main() {
 	flag.Parse()
+	ch := make(chan struct{}, 1)
+	tc := time.After(time.Hour) // NOTE: enough long
+	tt := false
+	if tm != "" {
+		ts, err := time.ParseDuration(tm)
+		if err != nil {
+			panic(err)
+		}
+		tc = time.After(ts)
+		tt = true
+	}
+	concur(ch)
+	for {
+		select {
+		case <-ch:
+			if !tt {
+				return
+			}
+			concur(ch)
+		case <-tc:
+			return
+		}
+	}
+}
 
+func concur(ch chan<- struct{}) {
 	ssCh := make(chan []*stat, concurrency)
 	for i := 0; i < concurrency; i++ {
 		go exec(requests/concurrency, ssCh)
@@ -88,6 +115,7 @@ func main() {
 	if cmd&cmdMGet > 0 {
 		fmt.Printf("MGET Success:%d Failure:%d NotEqual:%d NotResult:%d Time:%.6f\n", mgetS.n, mgetS.en, mgetS.ee, mgetS.mee, float32(mgetS.ts)/float32(mgetS.n))
 	}
+	ch <- struct{}{}
 }
 
 func exec(n int, ssCh chan []*stat) {
