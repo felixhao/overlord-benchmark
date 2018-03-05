@@ -14,8 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/gogo/protobuf/proto"
 )
 
 var (
@@ -77,8 +75,6 @@ const (
 	FlagGOB = uint32(1) << 0
 	// FlagJSON json encoding.
 	FlagJSON = uint32(1) << 1
-	// FlagProtobuf protobuf
-	FlagProtobuf = uint32(1) << 2
 
 	_flagEncoding = uint32(0xFFFF8000)
 
@@ -150,8 +146,6 @@ type Conn struct {
 	jr reader
 	jd *json.Decoder
 	je *json.Encoder
-	// protobuffer
-	ped *proto.Buffer
 }
 
 // Dial connects to the Memcache server at the given network and
@@ -179,9 +173,6 @@ func NewConn(netConn net.Conn, readTimeout, writeTimeout time.Duration) *Conn {
 	c.jd = json.NewDecoder(&c.jr)
 	c.je = json.NewEncoder(&c.edb)
 	c.edb.Grow(_encodeBuf)
-	// NOTE reuse bytes.Buffer internal buf
-	// DON'T concurrency call Scan
-	c.ped = proto.NewBuffer(c.edb.Bytes())
 	return c
 }
 
@@ -589,18 +580,6 @@ func (c *Conn) encode(item *Item) (data []byte, err error) {
 			return
 		}
 		data = c.edb.Bytes()
-	case item.Flags&FlagProtobuf == FlagProtobuf:
-		c.edb.Reset()
-		c.ped.SetBuf(c.edb.Bytes())
-		pb, ok := item.Object.(proto.Message)
-		if !ok {
-			err = ErrItemObject
-			return
-		}
-		if err = c.ped.Marshal(pb); err != nil {
-			return
-		}
-		data = c.ped.Bytes()
 	case item.Flags&FlagJSON == FlagJSON:
 		c.edb.Reset()
 		if err = c.je.Encode(item.Object); err != nil {
@@ -645,25 +624,15 @@ func (c *Conn) decode(rd io.Reader, item *Item, v interface{}) (err error) {
 			}
 			data = c.edb.Bytes()
 		}
-		if item.Flags&FlagProtobuf == FlagProtobuf {
-			m, ok := v.(proto.Message)
-			if !ok {
-				err = ErrItemObject
-				return
-			}
-			c.ped.SetBuf(data)
-			err = c.ped.Unmarshal(m)
-		} else {
-			switch v.(type) {
-			case *[]byte:
-				d := v.(*[]byte)
-				*d = data
-			case *string:
-				d := v.(*string)
-				*d = string(data)
-			case interface{}:
-				err = json.Unmarshal(data, v)
-			}
+		switch v.(type) {
+		case *[]byte:
+			d := v.(*[]byte)
+			*d = data
+		case *string:
+			d := v.(*string)
+			*d = string(data)
+		case interface{}:
+			err = json.Unmarshal(data, v)
 		}
 	}
 	return
