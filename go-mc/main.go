@@ -26,6 +26,8 @@ var (
 	cmd         int
 	tm          string
 	addr        string
+
+	cs []*conn.Conn
 )
 
 type stat struct {
@@ -61,6 +63,14 @@ func main() {
 		tc = time.After(ts)
 		tt = true
 	}
+	cs = make([]*conn.Conn, concurrency)
+	for i := 0; i < concurrency; i++ {
+		c, err := conn.Dial("tcp", addr, time.Second, time.Second, time.Second)
+		if err != nil {
+			panic("wocao!!!")
+		}
+		cs[i] = c
+	}
 	concur(ch)
 	for {
 		select {
@@ -78,7 +88,7 @@ func main() {
 func concur(ch chan<- struct{}) {
 	ssCh := make(chan []*stat, concurrency)
 	for i := 0; i < concurrency; i++ {
-		go exec(requests/concurrency, ssCh)
+		go exec(cs[i], requests/concurrency, ssCh)
 	}
 	ss := make([]*stat, 0, concurrency*3)
 	for i := 0; i < concurrency; i++ {
@@ -118,11 +128,7 @@ func concur(ch chan<- struct{}) {
 	ch <- struct{}{}
 }
 
-func exec(n int, ssCh chan []*stat) {
-	c, err := conn.Dial("tcp", addr, time.Second, time.Second, time.Second)
-	if err != nil {
-		println("exec cmd error:", err.Error())
-	}
+func exec(c *conn.Conn, n int, ssCh chan []*stat) {
 	allocK := [300]string{}
 	keys := allocK[:0]
 	items := map[string]*conn.Item{}
