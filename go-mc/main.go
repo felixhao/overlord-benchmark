@@ -25,6 +25,7 @@ var (
 	mkeys       int
 	cmd         int
 	tm          string
+	always      bool
 	addr        string
 
 	cs []*conn.Conn
@@ -47,6 +48,7 @@ func init() {
 	flag.IntVar(&mkeys, "k", 0, "multi keys")
 	flag.IntVar(&cmd, "f", 3, "command flag. bit: 1Set 10Get 100MGet.")
 	flag.StringVar(&tm, "t", "", "enough duration.")
+	flag.BoolVar(&always, "a", false, "always")
 	flag.StringVar(&addr, "addr", "", "addr")
 }
 
@@ -139,7 +141,7 @@ func exec(c *conn.Conn, n int, ssCh chan []*stat) {
 	s1 := &stat{}
 	s2 := &stat{}
 	s3 := &stat{}
-	for i := 0; i < n; i++ {
+	for i := 0; i < n || always; i++ {
 		key := randKey()
 		item := &conn.Item{
 			Key: key,
