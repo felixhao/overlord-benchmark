@@ -154,7 +154,7 @@ func exec(c *conn.Conn, n int, ssCh chan []*stat) {
 			s1.f = cmdSet
 			if err != nil {
 				s1.en++
-				println(err.Error())
+				println("SET:", err.Error())
 			} else {
 				s1.ts += tc
 				s1.n++
@@ -167,6 +167,7 @@ func exec(c *conn.Conn, n int, ssCh chan []*stat) {
 			s2.f = cmdGet
 			if err != nil {
 				s2.en++
+				println("GET:", err.Error())
 			} else {
 				s2.ts += tc
 				s2.n++
@@ -185,6 +186,7 @@ func exec(c *conn.Conn, n int, ssCh chan []*stat) {
 				s3.f = cmdMGet
 				if err != nil {
 					s3.en++
+					println("MGET:", err.Error())
 				} else {
 					s3.ts += tc
 					s3.n++
