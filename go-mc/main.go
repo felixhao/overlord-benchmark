@@ -29,7 +29,7 @@ var (
 	always      bool
 	addr        string
 
-	cs []*conn.Conn
+	cs []*errConn
 )
 
 type stat struct {
@@ -66,13 +66,11 @@ func main() {
 		tc = time.After(ts)
 		tt = true
 	}
-	cs = make([]*conn.Conn, concurrency)
+	cs = make([]*errConn, concurrency)
 	for i := 0; i < concurrency; i++ {
-		c, err := conn.Dial("tcp", addr, time.Second, time.Second, time.Second)
-		if err != nil {
-			panic("wocao!!!")
-		}
-		cs[i] = c
+		ec := &errConn{}
+		ec.reconn()
+		cs[i] = ec
 	}
 	concur(ch)
 	for {
@@ -85,6 +83,19 @@ func main() {
 		case <-tc:
 			return
 		}
+	}
+}
+
+type errConn struct {
+	conn *conn.Conn
+	err  error
+}
+
+func (ec *errConn) reconn() {
+	conn, err := conn.Dial("tcp", addr, time.Second, time.Second, time.Second)
+	if err == nil {
+		ec.conn = conn
+		ec.err = nil
 	}
 }
 
@@ -131,7 +142,7 @@ func concur(ch chan<- struct{}) {
 	ch <- struct{}{}
 }
 
-func exec(c *conn.Conn, n int, ssCh chan []*stat) {
+func exec(c *errConn, n int, ssCh chan []*stat) {
 	allocK := [300]string{}
 	keys := allocK[:0]
 	items := map[string]*conn.Item{}
@@ -143,6 +154,10 @@ func exec(c *conn.Conn, n int, ssCh chan []*stat) {
 	s2 := &stat{}
 	s3 := &stat{}
 	for i := 0; i < n || always; i++ {
+		if c.err != nil {
+			c.reconn()
+			continue
+		}
 		key := randKey()
 		item := &conn.Item{
 			Key: key,
@@ -150,12 +165,13 @@ func exec(c *conn.Conn, n int, ssCh chan []*stat) {
 		if cmd&cmdSet > 0 {
 			item.Value = randValue()
 			start := time.Now()
-			err := c.Set(item)
+			err := c.conn.Set(item)
 			tc := int32(time.Since(start) / time.Millisecond)
 			s1.f = cmdSet
 			if err != nil {
 				s1.en++
 				println("SET:", err.Error())
+				c.reconn()
 			} else {
 				s1.ts += tc
 				s1.n++
@@ -163,12 +179,13 @@ func exec(c *conn.Conn, n int, ssCh chan []*stat) {
 		}
 		if cmd&cmdGet > 0 {
 			start := time.Now()
-			r, err := c.Get(key)
+			r, err := c.conn.Get(key)
 			tc := int32(time.Since(start) / time.Millisecond)
 			s2.f = cmdGet
 			if err != nil {
 				s2.en++
 				println("GET:", err.Error())
+				c.reconn()
 			} else {
 				s2.ts += tc
 				s2.n++
@@ -182,12 +199,13 @@ func exec(c *conn.Conn, n int, ssCh chan []*stat) {
 			items[key] = item
 			if len(keys) >= ks {
 				start := time.Now()
-				res, err := c.GetMulti(keys)
+				res, err := c.conn.GetMulti(keys)
 				tc := int32(time.Since(start) / time.Millisecond)
 				s3.f = cmdMGet
 				if err != nil {
 					s3.en++
 					println("MGET:", err.Error())
+					c.reconn()
 				} else {
 					s3.ts += tc
 					s3.n++
