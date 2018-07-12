@@ -10,7 +10,7 @@ import (
 	mrand "math/rand"
 	"time"
 
-	"github.com/felixhao/overlord-benchmark/go-mc/conn"
+	"github.com/felixhao/overlord-benchmark/go-mcbin/conn"
 )
 
 const (
