@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -10,14 +9,13 @@ import (
 	mrand "math/rand"
 	"time"
 
-	"github.com/felixhao/overlord-benchmark/go-mcbin/conn"
+	"github.com/felixhao/overlord-benchmark/go-redis/conn"
 )
 
 const (
 	cmdSet  = 1
 	cmdGet  = 1 << 1
 	cmdMGet = 1 << 2
-	cmdDel  = 1 << 3
 )
 
 var (
@@ -48,7 +46,7 @@ func init() {
 	flag.IntVar(&requests, "n", 100, "requests")
 	flag.IntVar(&size, "s", 256, "bytes size")
 	flag.IntVar(&mkeys, "k", 0, "multi keys")
-	flag.IntVar(&cmd, "f", 3, "command flag. bit: 1Set 10Get 100MGet 1000DEL.")
+	flag.IntVar(&cmd, "f", 3, "command flag. bit: 1Set 10Get 100MGet.")
 	flag.StringVar(&tm, "t", "", "enough duration.")
 	flag.BoolVar(&always, "a", false, "always")
 	flag.StringVar(&addr, "addr", "", "addr")
@@ -113,7 +111,6 @@ func concur(ch chan<- struct{}) {
 	setS := &stat{}
 	getS := &stat{}
 	mgetS := &stat{}
-	delS := &stat{}
 	for _, s := range ss {
 		if s.f == cmdSet {
 			setS.n += s.n
@@ -130,10 +127,6 @@ func concur(ch chan<- struct{}) {
 			mgetS.en += s.en
 			mgetS.ee += s.ee
 			mgetS.mee += s.mee
-		} else if s.f == cmdDel {
-			delS.n += s.n
-			delS.ts += s.ts
-			delS.en += s.en
 		}
 	}
 	if cmd&cmdSet > 0 {
@@ -145,16 +138,13 @@ func concur(ch chan<- struct{}) {
 	if cmd&cmdMGet > 0 {
 		fmt.Printf("MGET Success:%d Failure:%d NotEqual:%d NotResult:%d Time:%.6f\n", mgetS.n, mgetS.en, mgetS.ee, mgetS.mee, float32(mgetS.ts)/float32(mgetS.n))
 	}
-	if cmd&cmdDel > 0 {
-		fmt.Printf("DEL Success:%d Failure:%d Time:%.6f\n", delS.n, delS.en, float32(delS.ts)/float32(delS.n))
-	}
 	ch <- struct{}{}
 }
 
 func exec(c *errConn, n int, ssCh chan []*stat) {
-	allocK := [300]string{}
+	allocK := [300]interface{}{}
 	keys := allocK[:0]
-	items := map[string]*conn.Item{}
+	items := map[string]string{}
 	ks := mkeys
 	if ks == 0 {
 		ks = 10
@@ -162,20 +152,17 @@ func exec(c *errConn, n int, ssCh chan []*stat) {
 	s1 := &stat{}
 	s2 := &stat{}
 	s3 := &stat{}
-	s4 := &stat{}
 	for i := 0; i < n || always; i++ {
 		if c.err != nil {
 			c.reconn()
 			continue
 		}
 		key := randKey()
-		item := &conn.Item{
-			Key: key,
-		}
+		var value string
 		if cmd&cmdSet > 0 {
-			item.Value = randValue()
+			value = randValue()
 			start := time.Now()
-			err := c.conn.Set(item)
+			_, err := c.conn.Do("set", key, value)
 			tc := int32(time.Since(start) / time.Millisecond)
 			s1.f = cmdSet
 			if err != nil {
@@ -189,7 +176,7 @@ func exec(c *errConn, n int, ssCh chan []*stat) {
 		}
 		if cmd&cmdGet > 0 {
 			start := time.Now()
-			r, err := c.conn.Get(key)
+			r, err := conn.String(c.conn.Do("get", key))
 			tc := int32(time.Since(start) / time.Millisecond)
 			s2.f = cmdGet
 			if err != nil {
@@ -200,16 +187,16 @@ func exec(c *errConn, n int, ssCh chan []*stat) {
 				s2.ts += tc
 				s2.n++
 			}
-			if r == nil || !bytes.Equal(r.Value, item.Value) {
+			if r != value {
 				s2.ee++
 			}
 		}
 		if cmd&cmdMGet > 0 {
 			keys = append(keys, key)
-			items[key] = item
+			items[key] = value
 			if len(keys) >= ks {
 				start := time.Now()
-				res, err := c.conn.GetMulti(keys)
+				res, err := conn.Strings(c.conn.Do("mget", keys...))
 				tc := int32(time.Since(start) / time.Millisecond)
 				s3.f = cmdMGet
 				if err != nil {
@@ -221,14 +208,14 @@ func exec(c *errConn, n int, ssCh chan []*stat) {
 					s3.n++
 				}
 				if cmd&cmdSet > 0 && res != nil {
-					for _, key := range keys {
-						i := items[key]
-						if i == nil {
+					for i, key := range keys {
+						iv := items[key.(string)]
+						if iv == "" {
 							s3.mee++
 							continue
 						}
-						if r := res[key]; r != nil {
-							if !bytes.Equal(r.Value, i.Value) {
+						if r := res[i]; r != "" {
+							if r != iv {
 								s3.ee++
 							}
 						} else {
@@ -242,25 +229,11 @@ func exec(c *errConn, n int, ssCh chan []*stat) {
 				} else {
 					ks = mrand.Intn(290) + 10
 				}
-				items = map[string]*conn.Item{}
-			}
-		}
-		if cmd&cmdDel > 0 {
-			start := time.Now()
-			err := c.conn.Delete(key)
-			tc := int32(time.Since(start) / time.Millisecond)
-			s4.f = cmdDel
-			if err != nil {
-				s4.en++
-				println("DELETE:", err.Error())
-				c.reconn()
-			} else {
-				s4.ts += tc
-				s4.n++
+				items = map[string]string{}
 			}
 		}
 	}
-	ssCh <- []*stat{s1, s2, s3, s4}
+	ssCh <- []*stat{s1, s2, s3}
 }
 
 func randKey() string {
@@ -269,9 +242,9 @@ func randKey() string {
 	return hex.EncodeToString(bs)
 }
 
-func randValue() []byte {
+func randValue() string {
 	bs := make([]byte, size)
 	rand.Read(bs)
 	ss := base64.StdEncoding.EncodeToString(bs)
-	return []byte(ss)
+	return ss
 }

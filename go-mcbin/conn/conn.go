@@ -17,10 +17,10 @@ import (
 )
 
 const (
-	magicReq  = 0x80
-	magicResp = 0x81
+	magicReq  byte = 0x80
+	magicResp byte = 0x81
 
-	zeroByte = 0x00
+	zeroByte byte = 0x00
 )
 
 var (
@@ -31,30 +31,30 @@ var (
 )
 
 const (
-	RequestTypeGet      = 0x00
-	RequestTypeSet      = 0x01
-	RequestTypeAdd      = 0x02
-	RequestTypeReplace  = 0x03
-	RequestTypeDelete   = 0x04
-	RequestTypeIncr     = 0x05
-	RequestTypeDecr     = 0x06
-	RequestTypeGetQ     = 0x09
-	RequestTypeNoop     = 0x0a
-	RequestTypeGetK     = 0x0c
-	RequestTypeGetKQ    = 0x0d
-	RequestTypeAppend   = 0x0e
-	RequestTypePrepend  = 0x0f
-	RequestTypeSetQ     = 0x11
-	RequestTypeAddQ     = 0x12
-	RequestTypeReplaceQ = 0x13
-	RequestTypeIncrQ    = 0x15
-	RequestTypeDecrQ    = 0x16
-	RequestTypeAppendQ  = 0x19
-	RequestTypePrependQ = 0x1a
-	RequestTypeTouch    = 0x1c
-	RequestTypeGat      = 0x1d
-	RequestTypeGatQ     = 0x1e
-	RequestTypeUnknown  = 0xff
+	RequestTypeGet      byte = 0x00
+	RequestTypeSet      byte = 0x01
+	RequestTypeAdd      byte = 0x02
+	RequestTypeReplace  byte = 0x03
+	RequestTypeDelete   byte = 0x04
+	RequestTypeIncr     byte = 0x05
+	RequestTypeDecr     byte = 0x06
+	RequestTypeGetQ     byte = 0x09
+	RequestTypeNoop     byte = 0x0a
+	RequestTypeGetK     byte = 0x0c
+	RequestTypeGetKQ    byte = 0x0d
+	RequestTypeAppend   byte = 0x0e
+	RequestTypePrepend  byte = 0x0f
+	RequestTypeSetQ     byte = 0x11
+	RequestTypeAddQ     byte = 0x12
+	RequestTypeReplaceQ byte = 0x13
+	RequestTypeIncrQ    byte = 0x15
+	RequestTypeDecrQ    byte = 0x16
+	RequestTypeAppendQ  byte = 0x19
+	RequestTypePrependQ byte = 0x1a
+	RequestTypeTouch    byte = 0x1c
+	RequestTypeGat      byte = 0x1d
+	RequestTypeGatQ     byte = 0x1e
+	RequestTypeUnknown  byte = 0xff
 )
 
 var (
@@ -291,31 +291,29 @@ func (c *Conn) populateOne(cmd byte, item *Item) (err error) {
 	kl := make([]byte, 2)
 	binary.BigEndian.PutUint16(kl, uint16(len(item.Key)))
 
-	total := len(item.Key) + len(item.Value) + 4 + 4 //NOTE: flag+expiration
-
 	fl := make([]byte, 4)
 	binary.BigEndian.PutUint32(fl, uint32(item.Flags))
 	el := make([]byte, 4)
 	binary.BigEndian.PutUint32(el, uint32(item.Expiration))
+	total := len(item.Key) + len(item.Value) + 4 + 4 //NOTE: flag+expiration
 	bl := make([]byte, 4)
 	binary.BigEndian.PutUint32(bl, uint32(total))
 	cl := make([]byte, 8)
 	binary.BigEndian.PutUint64(cl, item.cas)
 
-	_, err = fmt.Fprint(c.rw,
-		magicReq,
-		cmd,
-		kl,
-		0x08,          // NOTE: extra len
-		zeroByte,      // NOTE: Data type
-		zeroTwoBytes,  // NOTE: vbucket id
-		bl,            // NOTE: body length
-		zeroFourBytes, // NOTE: opaque
-		cl,            // NOTE: cas
-		fl,
-		el,
-		item.Key,
-	)
+	c.rw.WriteByte(magicReq)
+	c.rw.WriteByte(cmd)
+	c.rw.Write(kl)
+	c.rw.WriteByte(0x08)
+	c.rw.WriteByte(zeroByte)
+	c.rw.Write(zeroTwoBytes)
+	c.rw.Write(bl)
+	c.rw.Write(zeroFourBytes)
+	c.rw.Write(cl)
+	c.rw.Write(fl)
+	c.rw.Write(el)
+	c.rw.Write([]byte(item.Key))
+	c.rw.Write(item.Value)
 
 	if err != nil {
 		return c.fatal(err)
@@ -327,8 +325,9 @@ func (c *Conn) populateOne(cmd byte, item *Item) (err error) {
 		c.conn.SetReadDeadline(time.Now().Add(c.readTimeout))
 	}
 
-	resp, err := c.rw.Peek(24)
-	if err != nil {
+	resp := make([]byte, 24)
+	n, err := c.rw.Read(resp)
+	if err != nil || n != 24 {
 		return c.fatal(err)
 	}
 	if resp[0] != magicResp {
@@ -336,6 +335,17 @@ func (c *Conn) populateOne(cmd byte, item *Item) (err error) {
 	}
 	ss := resp[6:8]
 	if !bytes.Equal(ss, zeroTwoBytes) {
+		tls := resp[8:12]
+		tl := binary.BigEndian.Uint32(tls)
+
+		if tl > 0 {
+			body := make([]byte, tl)
+
+			if n, err = c.rw.Read(body); err != nil || n != int(tl) {
+				return c.fatal(fmt.Errorf("response error(%s)", body))
+			}
+		}
+
 		return fmt.Errorf("response error(%x)", ss)
 	}
 	return nil
@@ -349,18 +359,19 @@ func (c *Conn) Get(key string) (r *Item, err error) {
 	kl := make([]byte, 2)
 	binary.BigEndian.PutUint16(kl, uint16(len(key)))
 
-	_, err = fmt.Fprint(c.rw,
-		magicReq,
-		RequestTypeGetK,
-		kl,
-		zeroByte,      // NOTE: extra len
-		zeroByte,      // NOTE: Data type
-		zeroTwoBytes,  // NOTE: vbucket id
-		kl,            // NOTE: body length
-		zeroFourBytes, // NOTE: opaque
-		zeroByte,      // NOTE: cas
-		key,
-	)
+	bl := make([]byte, 4)
+	binary.BigEndian.PutUint32(bl, uint32(len(key)))
+
+	c.rw.WriteByte(magicReq)
+	c.rw.WriteByte(RequestTypeGetK)
+	c.rw.Write(kl)
+	c.rw.WriteByte(zeroByte)
+	c.rw.WriteByte(zeroByte)
+	c.rw.Write(zeroTwoBytes)
+	c.rw.Write(bl)
+	c.rw.Write(zeroFourBytes)
+	c.rw.Write(zeroEightBytes)
+	c.rw.Write([]byte(key))
 
 	if err = c.rw.Flush(); err != nil {
 		return nil, c.fatal(err)
@@ -397,18 +408,19 @@ func (c *Conn) GetMulti(keys []string) (res map[string]*Item, err error) {
 			cmd = RequestTypeGetK
 		}
 
-		_, err = fmt.Fprint(c.rw,
-			magicReq,
-			cmd,
-			kl,
-			zeroByte,      // NOTE: extra len
-			zeroByte,      // NOTE: Data type
-			zeroTwoBytes,  // NOTE: vbucket id
-			kl,            // NOTE: body length
-			zeroFourBytes, // NOTE: opaque
-			zeroByte,      // NOTE: cas
-			key,
-		)
+		bl := make([]byte, 4)
+		binary.BigEndian.PutUint32(bl, uint32(len(key)))
+
+		c.rw.WriteByte(magicReq)
+		c.rw.WriteByte(cmd)
+		c.rw.Write(kl)
+		c.rw.WriteByte(zeroByte)
+		c.rw.WriteByte(zeroByte)
+		c.rw.Write(zeroTwoBytes)
+		c.rw.Write(bl)
+		c.rw.Write(zeroFourBytes)
+		c.rw.Write(zeroEightBytes)
+		c.rw.Write([]byte(key))
 	}
 
 	if err = c.rw.Flush(); err != nil {
@@ -446,18 +458,19 @@ func (c *Conn) getMulti(keys []string) (res map[string]*Item, err error) {
 			cmd = RequestTypeGetK
 		}
 
-		_, err = fmt.Fprint(c.rw,
-			magicReq,
-			cmd,
-			kl,
-			zeroByte,      // NOTE: extra len
-			zeroByte,      // NOTE: Data type
-			zeroTwoBytes,  // NOTE: vbucket id
-			kl,            // NOTE: body length
-			zeroFourBytes, // NOTE: opaque
-			zeroByte,      // NOTE: cas
-			key,
-		)
+		bl := make([]byte, 4)
+		binary.BigEndian.PutUint32(bl, uint32(len(key)))
+
+		c.rw.WriteByte(magicReq)
+		c.rw.WriteByte(cmd)
+		c.rw.Write(kl)
+		c.rw.WriteByte(zeroByte)
+		c.rw.WriteByte(zeroByte)
+		c.rw.Write(zeroTwoBytes)
+		c.rw.Write(bl)
+		c.rw.Write(zeroFourBytes)
+		c.rw.Write(zeroEightBytes)
+		c.rw.Write([]byte(key))
 	}
 	if err = c.rw.Flush(); err != nil {
 		return nil, c.fatal(err)
@@ -506,8 +519,9 @@ func (c *Conn) parseGetReply(f func(*Item)) error {
 		c.conn.SetReadDeadline(time.Now().Add(c.readTimeout))
 	}
 	for {
-		resp, err := c.rw.Peek(24)
-		if err != nil {
+		resp := make([]byte, 24)
+		n, err := c.rw.Read(resp)
+		if err != nil || n != 24 {
 			return c.fatal(err)
 		}
 		if resp[0] != magicResp {
@@ -525,27 +539,38 @@ func (c *Conn) parseGetReply(f func(*Item)) error {
 		cs := resp[16:24]
 		it.cas = binary.BigEndian.Uint64(cs)
 
-		fs, err := c.rw.Peek(4) // NOTE: extra
-		if err != nil {
-			return c.fatal(err)
+		fs := make([]byte, 4)
+		n, err = c.rw.Read(fs) // NOTE: extra
+		if err != nil || n != 4 {
+			return c.fatal(fmt.Errorf("response read flag len(%d) error(%x)", n, err))
 		}
 		it.Flags = binary.BigEndian.Uint32(fs)
 
 		kls := resp[2:4]
 		kl := binary.BigEndian.Uint16(kls)
-		ks, err := c.rw.Peek(int(kl))
-		if err != nil {
-			return c.fatal(err)
+		if kl > 0 {
+			ks := make([]byte, kl)
+			if n, err = c.rw.Read(ks); err != nil || n != int(kl) {
+				return c.fatal(fmt.Errorf("response read key len(%d) expect(%d) error(%x)", n, kl, err))
+			}
+			it.Key = string(ks)
 		}
-		it.Key = string(ks)
 
 		bls := resp[8:12]
 		bl := binary.BigEndian.Uint32(bls)
-		it.Value, err = c.rw.Peek(int(bl))
-		if err != nil {
-			return c.fatal(err)
+		if bl > 0 {
+			bbl := int(bl) - int(kl) - 4 // NOTE: 4=flag len
+			vs := make([]byte, bbl)
+			n, err = c.rw.Read(vs)
+			if err != nil || n != bbl {
+				return c.fatal(fmt.Errorf("response read value len(%d) expect(%d) error(%x)", n, bbl, err))
+			}
+			it.Value = vs
 		}
 		f(it)
+		if resp[1] == RequestTypeGetK {
+			return nil
+		}
 	}
 }
 
@@ -564,27 +589,27 @@ func (c *Conn) Touch(key string, expire int32) (err error) {
 	tl := make([]byte, 4)
 	binary.BigEndian.PutUint32(tl, uint32(len(key))+4)
 
-	_, err = fmt.Fprint(c.rw,
-		magicReq,
-		RequestTypeTouch,
-		kl,
-		0x04,          // NOTE: extra len
-		zeroByte,      // NOTE: Data type
-		zeroTwoBytes,  // NOTE: vbucket id
-		tl,            // NOTE: body length
-		zeroFourBytes, // NOTE: opaque
-		zeroByte,      // NOTE: cas
-		el,
-		key,
-	)
+	c.rw.WriteByte(magicReq)
+	c.rw.WriteByte(RequestTypeTouch)
+	c.rw.Write(kl)
+	c.rw.WriteByte(zeroByte)
+	c.rw.WriteByte(zeroByte)
+	c.rw.Write(zeroTwoBytes)
+	c.rw.Write(tl)
+	c.rw.Write(zeroFourBytes)
+	c.rw.Write(zeroEightBytes)
+	c.rw.Write(el)
+	c.rw.Write([]byte(key))
+
 	if err := c.rw.Flush(); err != nil {
 		return c.fatal(err)
 	}
 	if c.readTimeout != 0 {
 		c.conn.SetReadDeadline(time.Now().Add(c.readTimeout))
 	}
-	resp, err := c.rw.Peek(24)
-	if err != nil {
+	resp := make([]byte, 24)
+	n, err := c.rw.Read(resp)
+	if err != nil || n != 24 {
 		return c.fatal(err)
 	}
 	if resp[0] != magicResp {
@@ -598,14 +623,14 @@ func (c *Conn) Touch(key string, expire int32) (err error) {
 }
 
 func (c *Conn) Increment(key string, delta uint64) (uint64, error) {
-	return c.incrDecr("incr", key, delta)
+	return c.incrDecr(RequestTypeIncr, key, delta)
 }
 
 func (c *Conn) Decrement(key string, delta uint64) (newValue uint64, err error) {
-	return c.incrDecr("decr", key, delta)
+	return c.incrDecr(RequestTypeDecr, key, delta)
 }
 
-func (c *Conn) incrDecr(cmd, key string, delta uint64) (uint64, error) {
+func (c *Conn) incrDecr(cmd byte, key string, delta uint64) (uint64, error) {
 	if c.writeTimeout != 0 {
 		c.conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
 	}
@@ -619,29 +644,29 @@ func (c *Conn) incrDecr(cmd, key string, delta uint64) (uint64, error) {
 	tl := make([]byte, 4)
 	binary.BigEndian.PutUint32(tl, uint32(len(key))+20)
 
-	_, err := fmt.Fprint(c.rw,
-		magicReq,
-		cmd,
-		kl,
-		0x14,          // NOTE: extra len
-		zeroByte,      // NOTE: Data type
-		zeroTwoBytes,  // NOTE: vbucket id
-		tl,            // NOTE: body length
-		zeroFourBytes, // NOTE: opaque
-		zeroByte,      // NOTE: cas
-		dl,
-		zeroEightBytes,
-		zeroFourBytes,
-		key,
-	)
-	if err = c.rw.Flush(); err != nil {
+	c.rw.WriteByte(magicReq)
+	c.rw.WriteByte(cmd)
+	c.rw.Write(kl)
+	c.rw.WriteByte(0x14)
+	c.rw.WriteByte(zeroByte)
+	c.rw.Write(zeroTwoBytes)
+	c.rw.Write(tl)
+	c.rw.Write(zeroFourBytes)
+	c.rw.Write(zeroEightBytes)
+	c.rw.Write(dl)
+	c.rw.Write(zeroEightBytes)
+	c.rw.Write(zeroFourBytes)
+	c.rw.Write([]byte(key))
+
+	if err := c.rw.Flush(); err != nil {
 		return 0, c.fatal(err)
 	}
 	if c.readTimeout != 0 {
 		c.conn.SetReadDeadline(time.Now().Add(c.readTimeout))
 	}
-	resp, err := c.rw.Peek(24)
-	if err != nil {
+	resp := make([]byte, 24)
+	n, err := c.rw.Read(resp)
+	if err != nil || n != 24 {
 		return 0, c.fatal(err)
 	}
 	if resp[0] != magicResp {
@@ -654,12 +679,17 @@ func (c *Conn) incrDecr(cmd, key string, delta uint64) (uint64, error) {
 
 	bls := resp[8:12]
 	bl := binary.BigEndian.Uint32(bls)
-	v, err := c.rw.Peek(int(bl))
-	if err != nil {
-		return 0, c.fatal(err)
-	}
 
-	return binary.BigEndian.Uint64(v), nil
+	if bl > 0 {
+		vl := int(bl) - 20 // NOTE: 20 is extra len
+		vs := make([]byte, vl)
+		n, err := c.rw.Read(vs)
+		if err != nil || vl != n {
+			return 0, c.fatal(err)
+		}
+		return binary.BigEndian.Uint64(vs), nil
+	}
+	return 0, nil
 }
 
 func (c *Conn) Delete(key string) (err error) {
@@ -670,26 +700,29 @@ func (c *Conn) Delete(key string) (err error) {
 	kl := make([]byte, 2)
 	binary.BigEndian.PutUint16(kl, uint16(len(key)))
 
-	_, err = fmt.Fprint(c.rw,
-		magicReq,
-		RequestTypeDelete,
-		kl,
-		0x14,          // NOTE: extra len
-		zeroByte,      // NOTE: Data type
-		zeroTwoBytes,  // NOTE: vbucket id
-		kl,            // NOTE: body length
-		zeroFourBytes, // NOTE: opaque
-		zeroByte,      // NOTE: cas
-		key,
-	)
+	bl := make([]byte, 4)
+	binary.BigEndian.PutUint32(bl, uint32(len(key)))
+
+	c.rw.WriteByte(magicReq)
+	c.rw.WriteByte(RequestTypeDelete)
+	c.rw.Write(kl)
+	c.rw.WriteByte(zeroByte)
+	c.rw.WriteByte(zeroByte)
+	c.rw.Write(zeroTwoBytes)
+	c.rw.Write(bl)
+	c.rw.Write(zeroFourBytes)
+	c.rw.Write(zeroEightBytes)
+	c.rw.Write([]byte(key))
+
 	if err = c.rw.Flush(); err != nil {
 		return c.fatal(err)
 	}
 	if c.readTimeout != 0 {
 		c.conn.SetReadDeadline(time.Now().Add(c.readTimeout))
 	}
-	resp, err := c.rw.Peek(24)
-	if err != nil {
+	resp := make([]byte, 24)
+	n, err := c.rw.Read(resp)
+	if err != nil || n != 24 {
 		return c.fatal(err)
 	}
 	if resp[0] != magicResp {
