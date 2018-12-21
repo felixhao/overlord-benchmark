@@ -27,6 +27,8 @@ var (
 	tm          string
 	always      bool
 	addr        string
+	short       bool
+	timeout     int64
 
 	cs []*errConn
 )
@@ -50,6 +52,8 @@ func init() {
 	flag.StringVar(&tm, "t", "", "enough duration.")
 	flag.BoolVar(&always, "a", false, "always")
 	flag.StringVar(&addr, "addr", "", "addr")
+	flag.BoolVar(&short, "short", false, "use non-persistent")
+	flag.Int64Var(&timeout, "dto", 1000, "timeout ms")
 }
 
 func main() {
@@ -68,7 +72,9 @@ func main() {
 	cs = make([]*errConn, concurrency)
 	for i := 0; i < concurrency; i++ {
 		ec := &errConn{}
-		ec.reconn()
+		if !short {
+			ec.reconn()
+		}
 		cs[i] = ec
 	}
 	concur(ch)
@@ -91,7 +97,7 @@ type errConn struct {
 }
 
 func (ec *errConn) reconn() {
-	conn, err := conn.Dial("tcp", addr, time.Second, time.Second, time.Second)
+	conn, err := conn.Dial("tcp", addr, time.Duration(timeout)*time.Millisecond, time.Second, time.Second)
 	if err == nil {
 		ec.conn = conn
 		ec.err = nil
@@ -162,7 +168,13 @@ func exec(c *errConn, n int, ssCh chan []*stat) {
 		if cmd&cmdSet > 0 {
 			value = randValue()
 			start := time.Now()
+			if short {
+				c.reconn()
+			}
 			_, err := c.conn.Do("set", key, value)
+			if short {
+				c.conn.Close()
+			}
 			tc := int32(time.Since(start) / time.Millisecond)
 			s1.f = cmdSet
 			if err != nil {
@@ -176,7 +188,13 @@ func exec(c *errConn, n int, ssCh chan []*stat) {
 		}
 		if cmd&cmdGet > 0 {
 			start := time.Now()
+			if short {
+				c.reconn()
+			}
 			r, err := conn.String(c.conn.Do("get", key))
+			if short {
+				c.conn.Close()
+			}
 			tc := int32(time.Since(start) / time.Millisecond)
 			s2.f = cmdGet
 			if err != nil {
@@ -196,7 +214,13 @@ func exec(c *errConn, n int, ssCh chan []*stat) {
 			items[key] = value
 			if len(keys) >= ks {
 				start := time.Now()
+				if short {
+					c.reconn()
+				}
 				res, err := conn.Strings(c.conn.Do("mget", keys...))
+				if short {
+					c.conn.Close()
+				}
 				tc := int32(time.Since(start) / time.Millisecond)
 				s3.f = cmdMGet
 				if err != nil {
