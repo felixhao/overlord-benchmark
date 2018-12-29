@@ -29,6 +29,7 @@ var (
 	replyTouched           = []byte("TOUCHED\r\n")
 	replyValueStr          = "VALUE"
 	replyClientErrorPrefix = []byte("CLIENT_ERROR ")
+	replyServerErrorPrefix = []byte("SERVER_ERROR ")
 )
 
 var (
@@ -421,17 +422,21 @@ func (c *Conn) parseGetReply(f func(*Item)) error {
 		if bytes.Equal(line, replyEnd) {
 			return nil
 		}
+		if bytes.HasPrefix(line, replyServerErrorPrefix) {
+			errMsg := line[len(replyServerErrorPrefix):]
+			return c.fatal(protocolError(errMsg))
+		}
 		it := new(Item)
 		size, err := scanGetReply(line, it)
 		if err != nil {
-			return err
+			return c.fatal(err)
 		}
 		it.Value = make([]byte, size+2)
 		if _, err = io.ReadFull(c.rw, it.Value); err != nil {
 			return c.fatal(err)
 		}
 		if !bytes.HasSuffix(it.Value, crlf) {
-			return protocolError("corrupt get reply, no except CRLF")
+			return c.fatal(protocolError("corrupt get reply, no except CRLF"))
 		}
 		it.Value = it.Value[:size]
 		f(it)

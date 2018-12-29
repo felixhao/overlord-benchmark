@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -248,6 +247,5 @@ func randKey() string {
 func randValue() []byte {
 	bs := make([]byte, size)
 	rand.Read(bs)
-	ss := base64.StdEncoding.EncodeToString(bs)
-	return []byte(ss)
+	return bs
 }
