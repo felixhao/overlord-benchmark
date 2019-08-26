@@ -10,7 +10,7 @@ import (
 	mrand "math/rand"
 	"time"
 
-	"github.com/felixhao/overlord-benchmark/go-mcbin/conn"
+	mc "github.com/dustin/gomemcached/client"
 )
 
 const (
@@ -88,12 +88,13 @@ func main() {
 }
 
 type errConn struct {
-	conn *conn.Conn
+	conn *mc.Client
 	err  error
 }
 
 func (ec *errConn) reconn() {
-	conn, err := conn.Dial("tcp", addr, time.Second, time.Second, time.Second)
+	conn, err := mc.Connect("tcp",addr)
+	// conn, err := conn.Dial("tcp", addr, time.Second, time.Second, time.Second)
 	if err == nil {
 		ec.conn = conn
 		ec.err = nil
@@ -154,7 +155,7 @@ func concur(ch chan<- struct{}) {
 func exec(c *errConn, n int, ssCh chan []*stat) {
 	allocK := [300]string{}
 	keys := allocK[:0]
-	items := map[string]*conn.Item{}
+	values := map[string][]byte{}
 	ks := mkeys
 	if ks == 0 {
 		ks = 10
@@ -169,13 +170,11 @@ func exec(c *errConn, n int, ssCh chan []*stat) {
 			continue
 		}
 		key := randKey()
-		item := &conn.Item{
-			Key: key,
-		}
+		value := randValue()
 		if cmd&cmdSet > 0 {
-			item.Value = randValue()
+			// item.Value = randValue()
 			start := time.Now()
-			err := c.conn.Set(item)
+			_,err := c.conn.Set(0, key, 0, 0, value)
 			tc := int32(time.Since(start) / time.Millisecond)
 			s1.f = cmdSet
 			if err != nil {
@@ -189,7 +188,7 @@ func exec(c *errConn, n int, ssCh chan []*stat) {
 		}
 		if cmd&cmdGet > 0 {
 			start := time.Now()
-			r, err := c.conn.Get(key)
+			r, err := c.conn.Get(0, key)
 			tc := int32(time.Since(start) / time.Millisecond)
 			s2.f = cmdGet
 			if err != nil {
@@ -200,16 +199,16 @@ func exec(c *errConn, n int, ssCh chan []*stat) {
 				s2.ts += tc
 				s2.n++
 			}
-			if r == nil || !bytes.Equal(r.Value, item.Value) {
+			if r == nil || !bytes.Equal(r.Body, value) {
 				s2.ee++
 			}
 		}
 		if cmd&cmdMGet > 0 {
 			keys = append(keys, key)
-			items[key] = item
+			values[key] = value
 			if len(keys) >= ks {
 				start := time.Now()
-				res, err := c.conn.GetMulti(keys)
+				res, err := c.conn.GetBulk(0, keys)
 				tc := int32(time.Since(start) / time.Millisecond)
 				s3.f = cmdMGet
 				if err != nil {
@@ -222,13 +221,13 @@ func exec(c *errConn, n int, ssCh chan []*stat) {
 				}
 				if cmd&cmdSet > 0 && res != nil {
 					for _, key := range keys {
-						i := items[key]
-						if i == nil {
+						iv := values[key]
+						if len(iv) == 0 {
 							s3.mee++
 							continue
 						}
 						if r := res[key]; r != nil {
-							if !bytes.Equal(r.Value, i.Value) {
+							if !bytes.Equal(r.Body, iv) {
 								s3.ee++
 							}
 						} else {
@@ -242,12 +241,12 @@ func exec(c *errConn, n int, ssCh chan []*stat) {
 				} else {
 					ks = mrand.Intn(290) + 10
 				}
-				items = map[string]*conn.Item{}
+				values = map[string][]byte{}
 			}
 		}
 		if cmd&cmdDel > 0 {
 			start := time.Now()
-			err := c.conn.Delete(key)
+			_, err := c.conn.Del(0, key)
 			tc := int32(time.Since(start) / time.Millisecond)
 			s4.f = cmdDel
 			if err != nil {

@@ -551,7 +551,7 @@ func (c *Conn) parseGetReply(f func(*Item)) error {
 		if kl > 0 {
 			ks := make([]byte, kl)
 			if n, err = c.rw.Read(ks); err != nil || n != int(kl) {
-				return c.fatal(fmt.Errorf("response read key len(%d) expect(%d) error(%x)", n, kl, err))
+				return c.fatal(fmt.Errorf("response read key len(%d) expect(%d) error(%v)", n, kl, err))
 			}
 			it.Key = string(ks)
 		}
@@ -563,7 +563,7 @@ func (c *Conn) parseGetReply(f func(*Item)) error {
 			vs := make([]byte, bbl)
 			n, err = c.rw.Read(vs)
 			if err != nil || n != bbl {
-				return c.fatal(fmt.Errorf("response read value len(%d) expect(%d) error(%x)", n, bbl, err))
+				return c.fatal(fmt.Errorf("response read value len(%d) expect(%d) error(%v)", n, bbl, err))
 			}
 			it.Value = vs
 		}
