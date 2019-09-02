@@ -10,6 +10,7 @@ import (
 	mrand "math/rand"
 	"time"
 
+	gm "github.com/dustin/gomemcached"
 	mc "github.com/dustin/gomemcached/client"
 )
 
@@ -29,6 +30,7 @@ var (
 	tm          string
 	always      bool
 	addr        string
+	vv          bool
 
 	cs []*errConn
 )
@@ -52,6 +54,7 @@ func init() {
 	flag.StringVar(&tm, "t", "", "enough duration.")
 	flag.BoolVar(&always, "a", false, "always")
 	flag.StringVar(&addr, "addr", "", "addr")
+	flag.BoolVar(&vv, "vv", false, "view version")
 }
 
 func main() {
@@ -73,6 +76,9 @@ func main() {
 		ec.reconn()
 		cs[i] = ec
 	}
+	if vv {
+		go viewVersion()
+	}
 	concur(ch)
 	for {
 		select {
@@ -93,7 +99,7 @@ type errConn struct {
 }
 
 func (ec *errConn) reconn() {
-	conn, err := mc.Connect("tcp",addr)
+	conn, err := mc.Connect("tcp", addr)
 	// conn, err := conn.Dial("tcp", addr, time.Second, time.Second, time.Second)
 	if err == nil {
 		ec.conn = conn
@@ -174,7 +180,7 @@ func exec(c *errConn, n int, ssCh chan []*stat) {
 		if cmd&cmdSet > 0 {
 			// item.Value = randValue()
 			start := time.Now()
-			_,err := c.conn.Set(0, key, 0, 0, value)
+			_, err := c.conn.Set(0, key, 0, 0, value)
 			tc := int32(time.Since(start) / time.Millisecond)
 			s1.f = cmdSet
 			if err != nil {
@@ -260,6 +266,21 @@ func exec(c *errConn, n int, ssCh chan []*stat) {
 		}
 	}
 	ssCh <- []*stat{s1, s2, s3, s4}
+}
+
+func viewVersion() {
+	ec := &errConn{}
+	ec.reconn()
+	for {
+		rv, err := ec.conn.Send(&gm.MCRequest{
+			Opcode: gm.VERSION,
+		})
+		if err != nil {
+			panic("wocao version:" + err.Error())
+		}
+		fmt.Printf("%s\n", rv)
+		time.Sleep(time.Second)
+	}
 }
 
 func randKey() string {
